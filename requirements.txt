@@ -1,0 +1,4 @@
+numpy==2.4.1
+opencv-python-headless==4.13.0.90
+ultralytics-opencv-headless==8.4.6
+PyYAML==6.0.2

@@ -1,0 +1,30 @@
+# ENV
+venv*
+cache
+config.yml
+
+# Python
+.pytest_cache
+.cov*
+cov*.xml
+htmlcov
+__pycache__
+
+# Editors
+.idea
+.vscode
+.devcontainer
+.DS_Store
+tags
+*.sw
+*.swo
+*.swp
+*.vim
+*.code-workspace
+
+# Assets
+*.jpg
+*.jpeg
+*.png
+*.xls
+*.xlsx
