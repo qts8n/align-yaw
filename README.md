@@ -36,6 +36,14 @@ Key flags / config fields (CLI flags override YAML):
 - `ransac_iters`, `thresh_deg`, `seed`.
 - `save_mask`: optional path for the final full-res mask (debug/inspection).
 
+## Panorama viewer (web)
+Split-screen WebGL viewer for inspecting equirectangular panoramas.
+
+- Serve `viewer/` (e.g., `python -m http.server 8000 -d viewer`) and open `http://localhost:8000/`.
+- If `viewer/pano.jpg` exists it loads automatically; otherwise an on-page prompt asks you to pick a panorama.
+- `Left pano` is required; enable Split view and `Right pano` to compare two scenes side by side.
+- Drag to look around; use the mouse wheel or pinch to zoom.
+
 ## Library usage
 ```python
 import cv2

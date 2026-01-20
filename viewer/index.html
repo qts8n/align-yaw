@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Pano Viewer</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="viewer-shell" id="viewerShell">
+      <div class="pane" id="leftPane">
+        <div class="pane-label">Left</div>
+      </div>
+      <div class="pane" id="rightPane">
+        <div class="pane-label">Right</div>
+      </div>
+      <div class="empty-state" id="emptyState" hidden>
+        Use the file pickers to load your panorama.
+      </div>
+    </div>
+
+    <div class="controls">
+      <div class="control-row">
+        <label class="file-picker">
+          <input type="file" id="leftPanoramaInput" accept="image/*" />
+          <span>Left pano</span>
+        </label>
+        <label class="file-picker ghosty">
+          <input type="file" id="rightPanoramaInput" accept="image/*" />
+          <span>Right pano</span>
+        </label>
+        <button class="pill-button" id="splitToggle" type="button">Split view: Off</button>
+      </div>
+    </div>
+
+    <div class="hint">Drag to look • Wheel/pinch to zoom</div>
+
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
