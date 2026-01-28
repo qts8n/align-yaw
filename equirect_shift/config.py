@@ -1,7 +1,15 @@
+import os
 from dataclasses import MISSING, dataclass, fields
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import yaml
+
+
+def _env_str(name: str, default: Optional[str] = None) -> Optional[str]:
+    val = os.getenv(name)
+    if val is None or val == "":
+        return default
+    return val
 
 
 @dataclass

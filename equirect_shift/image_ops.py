@@ -3,12 +3,24 @@ from typing import Tuple
 
 import cv2
 import numpy as np
+from fastapi import HTTPException, status
 
 
 def to_gray(img: np.ndarray) -> np.ndarray:
     if img.ndim == 2:
         return img
     return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+
+def decode_image_bytes(data: bytes) -> np.ndarray:
+    arr = np.frombuffer(data, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Failed to decode image bytes",
+        )
+    return img
 
 
 def robust_resize_for_features(img: np.ndarray, max_w: int = 2048) -> Tuple[np.ndarray, float]:
