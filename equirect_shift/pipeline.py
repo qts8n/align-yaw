@@ -1,5 +1,7 @@
 import logging
 import math
+import os
+import threading
 from dataclasses import dataclass
 
 import cv2
@@ -13,6 +15,45 @@ from .image_ops import circular_shift_equirect, clamp_int, robust_resize_for_fea
 from .masking import add_bottom_mask, dilate_mask, yolo_person_mask_seg
 
 logger = logging.getLogger(__name__)
+
+_YOLO_CACHE: dict[str, YOLO] = {}
+_YOLO_LOCK = threading.Lock()
+_DETECTOR_CACHE: dict[bool, tuple[str, cv2.Feature2D]] = {}
+_DETECTOR_LOCK = threading.Lock()
+
+
+def get_yolo_model(model_path: str) -> YOLO:
+    key = os.fspath(model_path)
+    cached = _YOLO_CACHE.get(key)
+    if cached is not None:
+        return cached
+    with _YOLO_LOCK:
+        cached = _YOLO_CACHE.get(key)
+        if cached is not None:
+            return cached
+        model = YOLO(key)
+        _YOLO_CACHE[key] = model
+        return model
+
+
+def get_detector(prefer_sift: bool) -> tuple[str, cv2.Feature2D]:
+    cached = _DETECTOR_CACHE.get(prefer_sift)
+    if cached is not None:
+        return cached
+    with _DETECTOR_LOCK:
+        cached = _DETECTOR_CACHE.get(prefer_sift)
+        if cached is not None:
+            return cached
+        cached = build_detector(prefer_sift=prefer_sift)
+        _DETECTOR_CACHE[prefer_sift] = cached
+        return cached
+
+
+def warmup_models(config: AlignConfig) -> None:
+    """Preload heavy models/detectors into memory."""
+    get_detector(config.prefer_sift)
+    if config.mask_people:
+        get_yolo_model(config.yolo_model)
 
 
 class AlignmentError(RuntimeError):
@@ -39,6 +80,14 @@ class AlignmentResult:
 def align_panoramas(config: AlignConfig) -> AlignmentResult:
     img1 = cv2.imread(config.pano_ref, cv2.IMREAD_COLOR)
     img2 = cv2.imread(config.pano_late, cv2.IMREAD_COLOR)
+    return align_panoramas_images(img1, img2, config)
+
+
+def align_panoramas_images(
+    img1: np.ndarray | None,
+    img2: np.ndarray | None,
+    config: AlignConfig,
+) -> AlignmentResult:
     if img1 is None or img2 is None:
         raise AlignmentError("Failed to read one of the input images.")
 
@@ -55,7 +104,7 @@ def align_panoramas(config: AlignConfig) -> AlignmentResult:
     add_bottom_mask(mask_small, config.bottom_mask_frac)
 
     if config.mask_people:
-        model: YOLO = YOLO(config.yolo_model)
+        model: YOLO = get_yolo_model(config.yolo_model)
 
         pm1 = yolo_person_mask_seg(
             model=model,
@@ -84,7 +133,7 @@ def align_panoramas(config: AlignConfig) -> AlignmentResult:
     g1 = to_gray(img1_small)
     g2 = to_gray(img2_small)
 
-    det_name, detector = build_detector(prefer_sift=config.prefer_sift)
+    det_name, detector = get_detector(prefer_sift=config.prefer_sift)
 
     k1, d1 = detector.detectAndCompute(g1, use_mask_small)
     k2, d2 = detector.detectAndCompute(g2, use_mask_small)

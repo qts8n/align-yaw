@@ -47,6 +47,72 @@ class AlignConfig:
         return cls(**cfg)
 
     @classmethod
+    def from_yaml(cls, path: str, overrides: Dict[str, Any] | None = None) -> "AlignConfig":
+        """Build AlignConfig from a YAML file, with optional overrides."""
+        yaml_config = cls._load_yaml(path)
+        defaults = cls._default_values()
+        overrides = overrides or {}
+
+        known_fields = {f.name for f in fields(cls)}
+        unknown_yaml = [k for k in yaml_config if k not in known_fields]
+        if unknown_yaml:
+            extras = ", ".join(sorted(unknown_yaml))
+            raise ValueError(f"Unknown config keys in YAML: {extras}")
+
+        unknown_overrides = [k for k in overrides if k not in known_fields]
+        if unknown_overrides:
+            extras = ", ".join(sorted(unknown_overrides))
+            raise ValueError(f"Unknown override keys: {extras}")
+
+        cfg: Dict[str, Any] = {**defaults, **yaml_config, **overrides}
+
+        missing = [k for k in ("pano_ref", "pano_late") if not cfg.get(k)]
+        if missing:
+            missing_s = ", ".join(missing)
+            raise ValueError(f"Missing required config values: {missing_s}")
+
+        return cls(**cfg)
+
+    @classmethod
+    def load_base_from_yaml(cls, path: str) -> Dict[str, Any]:
+        """Load defaults merged with YAML values for reuse across requests."""
+        yaml_config = cls._load_yaml(path)
+        defaults = cls._default_values()
+
+        known_fields = {f.name for f in fields(cls)}
+        unknown_yaml = [k for k in yaml_config if k not in known_fields]
+        if unknown_yaml:
+            extras = ", ".join(sorted(unknown_yaml))
+            raise ValueError(f"Unknown config keys in YAML: {extras}")
+
+        return {**defaults, **yaml_config}
+
+    @classmethod
+    def from_base(cls, base: Dict[str, Any], overrides: Dict[str, Any] | None = None) -> "AlignConfig":
+        """Build AlignConfig from a preloaded base config dict, with overrides."""
+        overrides = overrides or {}
+
+        known_fields = {f.name for f in fields(cls)}
+        unknown_base = [k for k in base if k not in known_fields]
+        if unknown_base:
+            extras = ", ".join(sorted(unknown_base))
+            raise ValueError(f"Unknown base config keys: {extras}")
+
+        unknown_overrides = [k for k in overrides if k not in known_fields]
+        if unknown_overrides:
+            extras = ", ".join(sorted(unknown_overrides))
+            raise ValueError(f"Unknown override keys: {extras}")
+
+        cfg: Dict[str, Any] = {**base, **overrides}
+
+        missing = [k for k in ("pano_ref", "pano_late") if not cfg.get(k)]
+        if missing:
+            missing_s = ", ".join(missing)
+            raise ValueError(f"Missing required config values: {missing_s}")
+
+        return cls(**cfg)
+
+    @classmethod
     def _default_values(cls) -> Dict[str, Any]:
         defaults: Dict[str, Any] = {}
         for f in fields(cls):
