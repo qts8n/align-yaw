@@ -5,6 +5,32 @@ from ultralytics.models.yolo.model import YOLO
 from .image_ops import clamp_int
 
 
+def _seam_shifts(width: int, seam_shifts: int) -> list[int]:
+    if seam_shifts <= 1:
+        return [0]
+    step = max(1, width // seam_shifts)
+    return [i * step for i in range(seam_shifts)]
+
+
+def _combine_instance_masks(result, h: int, w: int) -> np.ndarray | None:
+    if result.masks is None:
+        return None
+
+    m = result.masks.data
+    if isinstance(m, np.ndarray):
+        m_np = np.asarray(m)
+    else:
+        m_np = m.cpu().numpy()
+
+    if m_np.size == 0:
+        return None
+
+    combined = (np.max(m_np, axis=0) > 0.5).astype(np.uint8) * 255
+    if combined.shape[0] != h or combined.shape[1] != w:
+        combined = cv2.resize(combined, (w, h), interpolation=cv2.INTER_NEAREST)
+    return combined
+
+
 def add_bottom_mask(mask: np.ndarray, bottom_frac: float) -> None:
     if bottom_frac <= 0:
         return
@@ -14,66 +40,84 @@ def add_bottom_mask(mask: np.ndarray, bottom_frac: float) -> None:
     mask[y0:h, :] = 255
 
 
-def yolo_person_mask_seg(
-        model: YOLO,
-        img_bgr_small: np.ndarray,
-        conf: float,
-        iou: float,
-        seam_shifts: int,
-        person_class_id: int = 0) -> np.ndarray:
+def yolo_person_mask_seg_batch(
+    model: YOLO,
+    imgs_bgr_small: list[np.ndarray],
+    conf: float,
+    iou: float,
+    seam_shifts: int,
+    person_class_id: int = 0,
+) -> list[np.ndarray]:
     """
-    Returns uint8 mask (255 where person pixels are) in the same size as img_bgr_small.
-    Runs on a few horizontally rolled copies to catch people near the seam.
+    Returns uint8 masks (255 where person pixels are) for each image, same size as inputs.
+    Runs batch inference on horizontally rolled copies to catch people near the seam.
     """
-    h, w = img_bgr_small.shape[:2]
-    mask = np.zeros((h, w), dtype=np.uint8)
+    if not imgs_bgr_small:
+        return []
 
-    if seam_shifts <= 1:
-        shifts = [0]
-    else:
-        step = max(1, w // seam_shifts)
-        shifts = [i * step for i in range(seam_shifts)]
+    masks: list[np.ndarray] = []
+    sources: list[np.ndarray] = []
+    meta: list[tuple[int, int, int, int]] = []
 
-    for sx in shifts:
-        shifted = np.roll(img_bgr_small, shift=sx, axis=1)
+    for idx, img_bgr_small in enumerate(imgs_bgr_small):
+        h, w = img_bgr_small.shape[:2]
+        masks.append(np.zeros((h, w), dtype=np.uint8))
+        shifts = _seam_shifts(w, seam_shifts)
 
-        # Ultralytics expects RGB
-        rgb = cv2.cvtColor(shifted, cv2.COLOR_BGR2RGB)
-        results = model.predict(
-            source=rgb,
+        for sx in shifts:
+            shifted = np.roll(img_bgr_small, shift=sx, axis=1)
+            rgb = cv2.cvtColor(shifted, cv2.COLOR_BGR2RGB)
+            sources.append(rgb)
+            meta.append((idx, sx, h, w))
+
+    if not sources:
+        return masks
+
+    results = list(
+        model.predict(
+            source=sources,
             conf=conf,
             iou=iou,
+            batch=2,
             classes=[person_class_id],
             verbose=False,
         )
+    )
 
-        if not results:
+    for res, (img_idx, sx, h, w) in zip(results, meta):
+        combined = _combine_instance_masks(res, h, w)
+        if combined is None:
             continue
-
-        r = results[0]
-        if r.masks is None:
-            continue
-
-        # r.masks.data is (N, mh, mw) as a torch tensor. Convert to numpy.
-        m = r.masks.data
-
-        if isinstance(m, np.ndarray):
-            m_np = np.asarray(m)
-        else:
-            m_np = m.cpu().numpy()
-
-        # Combine all person instances
-        # Masks may be in model input resolution, but Ultralytics returns them already aligned to the original image size.
-        # Still, be defensive and resize to (h,w) if needed.
-        combined = (np.max(m_np, axis=0) > 0.5).astype(np.uint8) * 255
-        if combined.shape[0] != h or combined.shape[1] != w:
-            combined = cv2.resize(combined, (w, h), interpolation=cv2.INTER_NEAREST)
-
-        # Unshift back
         unshifted = np.roll(combined, shift=-sx, axis=1)
-        mask = cv2.bitwise_or(mask, unshifted)
+        masks[img_idx] = cv2.bitwise_or(masks[img_idx], unshifted)
 
-    return mask
+    return masks
+
+
+def yolo_person_mask_seg(
+    model: YOLO,
+    img_bgr_small: np.ndarray,
+    conf: float,
+    iou: float,
+    seam_shifts: int,
+    person_class_id: int = 0,
+) -> np.ndarray:
+    """
+    Returns uint8 mask (255 where person pixels are) in the same size as img_bgr_small.
+    Runs batch inference over horizontally rolled copies to catch people near the seam.
+    """
+    masks = yolo_person_mask_seg_batch(
+        model=model,
+        imgs_bgr_small=[img_bgr_small],
+        conf=conf,
+        iou=iou,
+        seam_shifts=seam_shifts,
+        person_class_id=person_class_id,
+    )
+    if masks:
+        return masks[0]
+    h, w = img_bgr_small.shape[:2]
+    return np.zeros((h, w), dtype=np.uint8)
 
 
 def dilate_mask(mask: np.ndarray, dilate_px: int) -> np.ndarray:

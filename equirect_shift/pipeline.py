@@ -2,6 +2,7 @@ import logging
 import math
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import cv2
@@ -12,7 +13,7 @@ from .config import AlignConfig
 from .features import build_detector, match_descriptors
 from .geometry import ransac_rotation, yaw_from_rotation
 from .image_ops import circular_shift_equirect, robust_resize_for_features, to_gray, yaw_px_from_rad
-from .masking import add_bottom_mask, dilate_mask, yolo_person_mask_seg
+from .masking import add_bottom_mask, dilate_mask, yolo_person_mask_seg_batch
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,13 @@ _YOLO_CACHE: dict[str, YOLO] = {}
 _YOLO_LOCK = threading.Lock()
 _DETECTOR_CACHE: dict[bool, tuple[str, cv2.Feature2D]] = {}
 _DETECTOR_LOCK = threading.Lock()
+
+
+def _run_pair(fn1, fn2):
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        f1 = executor.submit(fn1)
+        f2 = executor.submit(fn2)
+        return f1.result(), f2.result()
 
 
 def get_yolo_model(model_path: str) -> YOLO:
@@ -78,8 +86,10 @@ class AlignmentResult:
 
 
 def align_panoramas(config: AlignConfig) -> AlignmentResult:
-    img1 = cv2.imread(config.pano_ref, cv2.IMREAD_COLOR)
-    img2 = cv2.imread(config.pano_late, cv2.IMREAD_COLOR)
+    img1, img2 = _run_pair(
+        lambda: cv2.imread(config.pano_ref, cv2.IMREAD_COLOR),
+        lambda: cv2.imread(config.pano_late, cv2.IMREAD_COLOR),
+    )
     return align_panoramas_images(img1, img2, config)
 
 
@@ -97,8 +107,10 @@ def align_panoramas_images(
     if img2.shape[:2] != (H, W):
         raise AlignmentError(f"Input sizes differ: ref={img1.shape[:2]} late={img2.shape[:2]} (must match)")
 
-    img1_small, s1 = robust_resize_for_features(img1, max_w=config.maxw)
-    img2_small, s2 = robust_resize_for_features(img2, max_w=config.maxw)
+    (img1_small, s1), (img2_small, s2) = _run_pair(
+        lambda: robust_resize_for_features(img1, max_w=config.maxw),
+        lambda: robust_resize_for_features(img2, max_w=config.maxw),
+    )
 
     hS, wS = img1_small.shape[:2]
     mask_small = np.zeros((hS, wS), dtype=np.uint8)
@@ -107,22 +119,15 @@ def align_panoramas_images(
     if config.mask_people:
         model: YOLO = get_yolo_model(config.yolo_model)
 
-        pm1 = yolo_person_mask_seg(
+        pm_list = yolo_person_mask_seg_batch(
             model=model,
-            img_bgr_small=img1_small,
+            imgs_bgr_small=[img1_small, img2_small],
             conf=config.yolo_conf,
             iou=config.yolo_iou,
             seam_shifts=config.yolo_seam_shifts,
             person_class_id=0,
         )
-        pm2 = yolo_person_mask_seg(
-            model=model,
-            img_bgr_small=img2_small,
-            conf=config.yolo_conf,
-            iou=config.yolo_iou,
-            seam_shifts=config.yolo_seam_shifts,
-            person_class_id=0,
-        )
+        pm1, pm2 = pm_list
 
         pm = cv2.bitwise_or(pm1, pm2)
         pm = dilate_mask(pm, config.mask_dilate_px)
@@ -132,13 +137,21 @@ def align_panoramas_images(
     # OpenCV feature mask expects nonzero as allowed, so invert.
     use_mask_small = None if not has_mask else cv2.bitwise_not(mask_small)
 
-    g1 = to_gray(img1_small)
-    g2 = to_gray(img2_small)
+    g1, g2 = _run_pair(
+        lambda: to_gray(img1_small),
+        lambda: to_gray(img2_small),
+    )
 
-    det_name, detector = get_detector(prefer_sift=config.prefer_sift)
+    det_name, detector1 = get_detector(prefer_sift=config.prefer_sift)
+    det_name2, detector2 = build_detector(prefer_sift=config.prefer_sift)
+    if det_name2 != det_name:
+        logger.warning("Detector mismatch between cached and new detector: %s vs %s", det_name, det_name2)
+        det_name = det_name2
 
-    k1, d1 = detector.detectAndCompute(g1, use_mask_small)
-    k2, d2 = detector.detectAndCompute(g2, use_mask_small)
+    (k1, d1), (k2, d2) = _run_pair(
+        lambda: detector1.detectAndCompute(g1, use_mask_small),
+        lambda: detector2.detectAndCompute(g2, use_mask_small),
+    )
 
     if d1 is None or d2 is None or len(k1) < 50 or len(k2) < 50:
         raise AlignmentError("Not enough keypoints/descriptors. Try increasing --maxw, lowering masks, or using SIFT.")
