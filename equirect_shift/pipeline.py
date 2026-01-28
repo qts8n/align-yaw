@@ -10,8 +10,8 @@ from ultralytics.models.yolo.model import YOLO
 
 from .config import AlignConfig
 from .features import build_detector, match_descriptors
-from .geometry import equirect_to_unit, ransac_rotation, yaw_from_rotation
-from .image_ops import circular_shift_equirect, clamp_int, robust_resize_for_features, to_gray, yaw_px_from_rad
+from .geometry import ransac_rotation, yaw_from_rotation
+from .image_ops import circular_shift_equirect, robust_resize_for_features, to_gray, yaw_px_from_rad
 from .masking import add_bottom_mask, dilate_mask, yolo_person_mask_seg
 
 logger = logging.getLogger(__name__)
@@ -87,6 +87,8 @@ def align_panoramas_images(
     img1: np.ndarray | None,
     img2: np.ndarray | None,
     config: AlignConfig,
+    return_aligned: bool = True,
+    return_mask_full: bool = True,
 ) -> AlignmentResult:
     if img1 is None or img2 is None:
         raise AlignmentError("Failed to read one of the input images.")
@@ -100,7 +102,6 @@ def align_panoramas_images(
 
     hS, wS = img1_small.shape[:2]
     mask_small = np.zeros((hS, wS), dtype=np.uint8)
-
     add_bottom_mask(mask_small, config.bottom_mask_frac)
 
     if config.mask_people:
@@ -127,8 +128,9 @@ def align_panoramas_images(
         pm = dilate_mask(pm, config.mask_dilate_px)
         mask_small = cv2.bitwise_or(mask_small, pm)
 
+    has_mask = bool(np.any(mask_small))
     # OpenCV feature mask expects nonzero as allowed, so invert.
-    use_mask_small = cv2.bitwise_not(mask_small)
+    use_mask_small = None if not has_mask else cv2.bitwise_not(mask_small)
 
     g1 = to_gray(img1_small)
     g2 = to_gray(img2_small)
@@ -145,50 +147,81 @@ def align_panoramas_images(
     if len(matches) < 80:
         raise AlignmentError(f"Not enough good matches after ratio test: {len(matches)}. Try increasing --maxw or loosening --ratio.")
 
-    mask_full = cv2.resize(mask_small, (W, H), interpolation=cv2.INTER_NEAREST)
+    if return_mask_full:
+        mask_full = cv2.resize(mask_small, (W, H), interpolation=cv2.INTER_NEAREST)
+    else:
+        mask_full = np.empty((0, 0), dtype=np.uint8)
 
-    A_list = []
-    B_list = []
+    k1_pts = np.array([kp.pt for kp in k1], dtype=np.float32)
+    k2_pts = np.array([kp.pt for kp in k2], dtype=np.float32)
+    q_idx = np.fromiter((m.queryIdx for m in matches), dtype=np.int32, count=len(matches))
+    t_idx = np.fromiter((m.trainIdx for m in matches), dtype=np.int32, count=len(matches))
 
-    for m in matches:
-        x1, y1 = k1[m.queryIdx].pt
-        x2, y2 = k2[m.trainIdx].pt
+    pts1 = k1_pts[q_idx]
+    pts2 = k2_pts[t_idx]
 
-        u1 = x1 / s1
-        v1 = y1 / s1
-        u2 = x2 / s2
-        v2 = y2 / s2
+    inv_s1 = 1.0 / s1
+    inv_s2 = 1.0 / s2
 
-        iu1 = clamp_int(int(round(u1)), 0, W - 1)
-        iv1 = clamp_int(int(round(v1)), 0, H - 1)
-        iu2 = clamp_int(int(round(u2)), 0, W - 1)
-        iv2 = clamp_int(int(round(v2)), 0, H - 1)
+    v1_full = pts1[:, 1] * inv_s1
+    v2_full = pts2[:, 1] * inv_s2
+    pole_ok = (
+        (v1_full >= 0.08 * H)
+        & (v1_full <= 0.92 * H)
+        & (v2_full >= 0.08 * H)
+        & (v2_full <= 0.92 * H)
+    )
 
-        if mask_full[iv1, iu1] != 0:
-            continue
-        if mask_full[iv2, iu2] != 0:
-            continue
+    if has_mask:
+        x1 = np.rint(pts1[:, 0]).astype(np.int32)
+        y1 = np.rint(pts1[:, 1]).astype(np.int32)
+        x2 = np.rint(pts2[:, 0]).astype(np.int32)
+        y2 = np.rint(pts2[:, 1]).astype(np.int32)
+        np.clip(x1, 0, wS - 1, out=x1)
+        np.clip(y1, 0, hS - 1, out=y1)
+        np.clip(x2, 0, wS - 1, out=x2)
+        np.clip(y2, 0, hS - 1, out=y2)
+        mask_ok = (mask_small[y1, x1] == 0) & (mask_small[y2, x2] == 0)
+    else:
+        mask_ok = np.ones(len(matches), dtype=bool)
 
-        # Pole filter (still useful)
-        if v1 < 0.08 * H or v1 > 0.92 * H:
-            continue
-        if v2 < 0.08 * H or v2 > 0.92 * H:
-            continue
+    valid = pole_ok & mask_ok
+    valid_count = int(np.sum(valid))
+    if valid_count < 60:
+        raise AlignmentError(
+            f"Too few correspondences after filtering: {valid_count}. "
+            "Try increasing --maxw, lowering --mask-dilate-px, or using a bigger YOLO model."
+        )
 
-        A_list.append(equirect_to_unit(u2, v2, W, H))  # late
-        B_list.append(equirect_to_unit(u1, v1, W, H))  # ref
+    u1 = pts1[valid, 0] * inv_s1
+    v1 = pts1[valid, 1] * inv_s1
+    u2 = pts2[valid, 0] * inv_s2
+    v2 = pts2[valid, 1] * inv_s2
 
-    if len(A_list) < 60:
-        raise AlignmentError(f"Too few correspondences after filtering: {len(A_list)}. Try increasing --maxw, lowering --mask-dilate-px, or using a bigger YOLO model.")
+    def _equirect_to_unit_batch(u: np.ndarray, v: np.ndarray, w: int, h: int) -> np.ndarray:
+        two_pi = 2.0 * math.pi
+        lam = (u / w) * two_pi - math.pi
+        phi = (math.pi / 2.0) - (v / h) * math.pi
+        c = np.cos(phi)
+        x = c * np.cos(lam)
+        y = np.sin(phi)
+        z = c * np.sin(lam)
+        vecs = np.stack((x, y, z), axis=1)
+        n = np.linalg.norm(vecs, axis=1, keepdims=True)
+        np.divide(vecs, n, out=vecs, where=n != 0)
+        return vecs
 
-    A = np.vstack(A_list)
-    B = np.vstack(B_list)
+    A = _equirect_to_unit_batch(u2, v2, W, H)
+    B = _equirect_to_unit_batch(u1, v1, W, H)
 
     res = ransac_rotation(A, B, iters=config.ransac_iters, thresh_deg=config.thresh_deg, seed=config.seed)
     yaw = -yaw_from_rotation(res.R)
 
     shift_px = yaw_px_from_rad(yaw, W)
-    aligned = circular_shift_equirect(img2, shift_px)
+    if return_aligned:
+        aligned = img2 if (shift_px % W) == 0 else circular_shift_equirect(img2, shift_px)
+    else:
+        aligned = img2
 
     inlier_count = int(np.sum(res.inliers))
     total = int(len(res.inliers))

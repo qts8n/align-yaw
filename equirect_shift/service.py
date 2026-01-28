@@ -130,7 +130,13 @@ def create_app() -> FastAPI:
         base_config = getattr(request.app.state, "align_config_base", None)
         config = _make_align_config(settings, "__s3_ref__", "__s3_late__", base_config=base_config)
         try:
-            result = align_panoramas_images(img_ref, img_late, config)
+            result = align_panoramas_images(
+                img_ref,
+                img_late,
+                config,
+                return_aligned=False,
+                return_mask_full=False,
+            )
         except AlignmentError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

@@ -5,7 +5,7 @@ maxw: 2048
 ransac_iters: 2500
 thresh_deg: 1.5
 seed: 0
-prefer_sift: true
+prefer_sift: false
 ratio: 0.75
 bottom_mask_frac: 0.25
 yolo_model: yolo26s-seg.pt
