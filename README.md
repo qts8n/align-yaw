@@ -37,7 +37,7 @@ Key flags / config fields (CLI flags override YAML):
 - `save_mask`: optional path for the final full-res mask (debug/inspection).
 
 ## API service
-FastAPI service that accepts S3 object keys and returns yaw/shift metadata. See `API.md` for full details.
+FastAPI service that accepts S3 object keys or direct image URLs and returns yaw/shift metadata. See `API.md` for full details.
 
 ```bash
 export ALIGN_CONFIG_YAML=default_config.yaml

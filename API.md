@@ -1,9 +1,9 @@
 # Equirect Shift API
 
-FastAPI service for estimating yaw alignment between two equirectangular panoramas stored in S3.
+FastAPI service for estimating yaw alignment between two equirectangular panoramas stored in S3 or accessible via direct URLs.
 
 ## Overview
-- Reads two S3 objects (`pano_ref`, `pano_late`) from the same bucket.
+- Reads two S3 objects (`pano_ref`, `pano_late`) from the same bucket or downloads two direct URLs.
 - Runs the alignment pipeline and returns yaw + shift metadata.
 - Does not upload or persist output images.
 
@@ -57,12 +57,37 @@ Field notes:
 - `median_error_deg`: median angular error (in degrees) of RANSAC inliers.
 - `det_name`: feature detector used (SIFT or ORB).
 
+### POST /align/yaw/url
+Compute yaw shift between two panoramas available at direct HTTP(S) URLs.
+
+Request body:
+```json
+{
+  "pano_ref_url": "https://example.com/week1/pano.jpg",
+  "pano_late_url": "https://example.com/week2/pano.jpg"
+}
+```
+
+Response body:
+```json
+{
+  "yaw_rad": -0.042,
+  "shift_px": -256,
+  "width": 8192,
+  "height": 4096,
+  "median_error_deg": 0.83,
+  "det_name": "SIFT"
+}
+```
+
 ## Errors
 The service uses standard HTTP errors with a JSON `detail` string. Common cases:
 - `401 Unauthorized`: missing or invalid service token.
 - `404 Not Found`: S3 object missing.
+- `404 Not Found`: URL not found.
 - `422 Unprocessable Entity`: invalid request, decode failure, or alignment failure.
 - `502 Bad Gateway`: S3 read failed.
+- `502 Bad Gateway`: URL download failed.
 - `500 Internal Server Error`: configuration errors (e.g., missing `ALIGN_CONFIG_YAML`).
 
 ## Configuration
@@ -76,6 +101,7 @@ Environment variables used by the service:
 Notes:
 - `pano_ref` and `pano_late` in the YAML are ignored by the API; they are overridden by the request.
 - All other YAML fields control the pipeline (e.g., `maxw`, `ratio`, `mask_people`, `yolo_model`).
+- S3 settings are only required when using `/align/yaw`.
 
 ## Method overview
 Alignment steps performed by the service:
