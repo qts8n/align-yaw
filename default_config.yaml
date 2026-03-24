@@ -1,11 +1,11 @@
 pano_ref: assets/week1-1.jpg
 pano_late: assets/week2-1.jpg
 out: assets/week2-1_aligned.png
-maxw: 2048
+maxw: 1024
 ransac_iters: 2500
 thresh_deg: 1.5
 seed: 0
-prefer_sift: true
+prefer_sift: false
 ratio: 0.75
 bottom_mask_frac: 0.25
 yolo_model: yolo26s-seg.pt

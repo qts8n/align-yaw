@@ -36,6 +36,16 @@ Key flags / config fields (CLI flags override YAML):
 - `ransac_iters`, `thresh_deg`, `seed`.
 - `save_mask`: optional path for the final full-res mask (debug/inspection).
 
+## API service
+FastAPI service that accepts S3 object keys or direct image URLs and returns yaw/shift metadata. See `API.md` for full details.
+
+```bash
+export ALIGN_CONFIG_YAML=default_config.yaml
+python main.py
+```
+
+Optional auth and S3 settings are configured via environment variables (documented in `API.md`).
+
 ## Panorama viewer (web)
 Split-screen WebGL viewer for inspecting equirectangular panoramas.
 
